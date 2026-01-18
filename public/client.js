@@ -6,12 +6,11 @@ let currentRole = 'client';
 let isConnected = false;
 let audioElement;
 let wakeLock = null;
-let myChannel = 'both';
-let audioMode = 'stereo';
-let audioWorkletNode = null;
-let sourceNode = null;
-let destinationNode = null;
-let serverVolume = 100; // Volume controlled from server
+let myChannel = 'both'; // 'left', 'right', or 'both'
+let audioMode = 'stereo'; // 'stereo' or 'mono'
+let splitterNode = null;
+let leftGainNode = null;
+let rightGainNode = null;
 
 const iceServers = {
   iceServers: [
@@ -20,6 +19,7 @@ const iceServers = {
   ]
 };
 
+// Initialize socket connection
 function initSocket() {
   socket = io();
   
@@ -41,22 +41,6 @@ function initSocket() {
     updateChannelDisplay();
   });
 
-  socket.on('server-volume-change', (volume) => {
-    serverVolume = volume;
-    console.log(`Server adjusted volume to: ${volume}%`);
-    
-    // Update local volume slider to reflect server control
-    const volumeSlider = document.getElementById('volumeSlider');
-    const volumeValue = document.getElementById('volumeValue');
-    if (volumeSlider && volumeValue) {
-      volumeSlider.value = volume;
-      volumeValue.textContent = volume + '%';
-    }
-    
-    // Apply volume
-    applyVolume();
-  });
-
   socket.on('audio-mode-changed', (data) => {
     audioMode = data.mode;
     console.log(`Audio mode changed to: ${audioMode}`);
@@ -72,6 +56,7 @@ function initSocket() {
   socket.on('client-channel-changed', async (data) => {
     if (currentRole === 'server') {
       console.log(`Client channel changed: ${data.clientId} -> ${data.channel}`);
+      // Recreate peer connection with new channel configuration
       const pc = peerConnections.get(data.clientId);
       if (pc) {
         pc.close();
@@ -107,20 +92,15 @@ function initSocket() {
     if (pc && data.candidate) {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        console.log('✓ ICE candidate added');
       } catch (e) {
         console.error('Error adding ICE candidate:', e);
       }
     }
   });
-
-  socket.on('sync-time', (data) => {
-    // Basic time sync for audio synchronization
-    const serverTime = data.time;
-    const latency = Date.now() - data.clientSendTime;
-    console.log(`Network latency: ${latency}ms`);
-  });
 }
 
+// Switch between client and server roles
 function switchRole(role) {
   currentRole = role;
   document.querySelectorAll('.role-btn').forEach(btn => btn.classList.remove('active'));
@@ -140,10 +120,7 @@ async function connectAsClient() {
   }
 
   try {
-    audioContext = new (window.AudioContext || window.webkitAudioContext)({
-      latencyHint: 'playback',
-      sampleRate: 48000
-    });
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
     
     if (audioContext.state === 'suspended') {
       await audioContext.resume();
@@ -175,9 +152,9 @@ async function handleOffer(data) {
   const pc = new RTCPeerConnection(iceServers);
   peerConnections.set('server', pc);
 
-  pc.ontrack = async (event) => {
+  pc.ontrack = (event) => {
     console.log('🎵 AUDIO TRACK RECEIVED!', event);
-    await setupProperStereoAudio(event.streams[0]);
+    setupStereoAudio(event.streams[0]);
   };
 
   pc.onicecandidate = (event) => {
@@ -213,102 +190,68 @@ async function handleOffer(data) {
   }
 }
 
-async function setupProperStereoAudio(stream) {
-  console.log('Setting up PROPER stereo separation...');
+function setupStereoAudio(stream) {
+  // Create audio element if doesn't exist
+  if (!audioElement) {
+    audioElement = new Audio();
+    audioElement.autoplay = true;
+  }
   
-  // Clean up previous nodes
-  if (sourceNode) sourceNode.disconnect();
-  if (destinationNode) destinationNode.disconnect();
+  // For basic playback without processing (when both channels)
+  if (myChannel === 'both') {
+    audioElement.srcObject = stream;
+    audioElement.volume = document.getElementById('volumeSlider').value / 100;
+    
+    audioElement.play()
+      .then(() => {
+        console.log('✓ Stereo audio playback started!');
+      })
+      .catch(error => {
+        console.warn('⚠ Auto-play blocked, tap screen to start:', error);
+        showPlayButton();
+      });
+    return;
+  }
+
+  // For stereo separation (left/right channel isolation)
+  const source = audioContext.createMediaStreamSource(stream);
   
-  // Create source from stream
-  sourceNode = audioContext.createMediaStreamSource(stream);
+  // Create stereo splitter
+  splitterNode = audioContext.createChannelSplitter(2);
   
-  // Create channel splitter (separates L and R)
-  const splitter = audioContext.createChannelSplitter(2);
+  // Create gain nodes for left and right
+  leftGainNode = audioContext.createGain();
+  rightGainNode = audioContext.createGain();
   
-  // Create individual gain nodes for L and R
-  const leftGain = audioContext.createGain();
-  const rightGain = audioContext.createGain();
-  
-  // Create merger to recombine
+  // Create merger to combine back
   const merger = audioContext.createChannelMerger(2);
   
-  // Master volume gain
-  const masterGain = audioContext.createGain();
-  masterGain.gain.value = serverVolume / 100;
-  window.masterGainNode = masterGain;
-  
-  // Configure gains based on channel
+  // Set gains based on channel assignment
   if (myChannel === 'left') {
-    console.log('🔴 Configuring LEFT channel only');
-    leftGain.gain.value = 1.0;   // Keep left
-    rightGain.gain.value = 0.0;  // MUTE right completely
-    
-    // Output left channel to BOTH speakers for mono effect
-    sourceNode.connect(splitter);
-    splitter.connect(leftGain, 0);      // Get left channel
-    splitter.connect(rightGain, 1);     // Get right (but muted)
-    leftGain.connect(merger, 0, 0);     // Left -> Left output
-    leftGain.connect(merger, 0, 1);     // Left -> Right output (duplicate)
-    rightGain.connect(merger, 0, 0);    // Right muted
-    
+    leftGainNode.gain.value = 1.0;  // Full left channel
+    rightGainNode.gain.value = 0.0; // Mute right channel
   } else if (myChannel === 'right') {
-    console.log('🔵 Configuring RIGHT channel only');
-    leftGain.gain.value = 0.0;   // MUTE left completely
-    rightGain.gain.value = 1.0;  // Keep right
-    
-    // Output right channel to BOTH speakers for mono effect
-    sourceNode.connect(splitter);
-    splitter.connect(leftGain, 0);      // Get left (but muted)
-    splitter.connect(rightGain, 1);     // Get right channel
-    rightGain.connect(merger, 0, 0);    // Right -> Left output (duplicate)
-    rightGain.connect(merger, 0, 1);    // Right -> Right output
-    leftGain.connect(merger, 0, 1);     // Left muted
-    
-  } else {
-    console.log('🟢 Configuring BOTH channels (stereo)');
-    leftGain.gain.value = 1.0;   // Keep left
-    rightGain.gain.value = 1.0;  // Keep right
-    
-    // Normal stereo output
-    sourceNode.connect(splitter);
-    splitter.connect(leftGain, 0);
-    splitter.connect(rightGain, 1);
-    leftGain.connect(merger, 0, 0);
-    rightGain.connect(merger, 0, 1);
+    leftGainNode.gain.value = 0.0;  // Mute left channel
+    rightGainNode.gain.value = 1.0; // Full right channel
   }
   
-  // Connect to master gain and output
-  merger.connect(masterGain);
-  masterGain.connect(audioContext.destination);
-  destinationNode = masterGain;
+  // Volume control
+  const volumeGain = audioContext.createGain();
+  volumeGain.gain.value = document.getElementById('volumeSlider').value / 100;
   
-  console.log(`✓ Audio graph configured for ${myChannel.toUpperCase()} channel`);
+  // Connect the audio graph
+  source.connect(splitterNode);
+  splitterNode.connect(leftGainNode, 0);   // Left channel
+  splitterNode.connect(rightGainNode, 1);  // Right channel
+  leftGainNode.connect(merger, 0, 0);
+  rightGainNode.connect(merger, 0, 1);
+  merger.connect(volumeGain);
+  volumeGain.connect(audioContext.destination);
   
-  // Test the setup
-  const tracks = stream.getAudioTracks();
-  if (tracks.length > 0) {
-    console.log('Audio track settings:', tracks[0].getSettings());
-  }
+  console.log(`✓ ${myChannel.toUpperCase()} channel audio configured!`);
   
-  // Resume context if needed
-  if (audioContext.state === 'suspended') {
-    audioContext.resume().then(() => {
-      console.log('✓ Audio context resumed');
-    }).catch(e => {
-      console.error('Failed to resume:', e);
-      showPlayButton();
-    });
-  }
-}
-
-function applyVolume() {
-  if (window.masterGainNode) {
-    const localVolume = document.getElementById('volumeSlider').value / 100;
-    const serverVolumeNormalized = serverVolume / 100;
-    // Combine local and server volume
-    window.masterGainNode.gain.value = localVolume * serverVolumeNormalized;
-  }
+  // Store volume node for updates
+  window.volumeGainNode = volumeGain;
 }
 
 function updateChannelDisplay() {
@@ -319,17 +262,17 @@ function updateChannelDisplay() {
   const channelBadge = document.getElementById('channelBadge');
   
   if (myChannel === 'both') {
-    channelBadge.textContent = '🔊 BOTH (Stereo)';
+    channelBadge.textContent = '🔊 BOTH (Mono)';
     channelBadge.className = 'channel-badge mono';
     channelInfo.textContent = 'Playing full stereo audio';
   } else if (myChannel === 'left') {
-    channelBadge.textContent = '◀️ LEFT ONLY';
+    channelBadge.textContent = '◀️ LEFT';
     channelBadge.className = 'channel-badge left';
-    channelInfo.textContent = 'Left channel isolated (muted right)';
+    channelInfo.textContent = 'Left channel only';
   } else if (myChannel === 'right') {
-    channelBadge.textContent = '▶️ RIGHT ONLY';
+    channelBadge.textContent = '▶️ RIGHT';
     channelBadge.className = 'channel-badge right';
-    channelInfo.textContent = 'Right channel isolated (muted left)';
+    channelInfo.textContent = 'Right channel only';
   }
   
   channelIndicator.style.display = 'block';
@@ -337,16 +280,6 @@ function updateChannelDisplay() {
 
 function changeMyChannel(newChannel) {
   socket.emit('change-channel', newChannel);
-  myChannel = newChannel;
-  
-  // Need to reconnect to apply new channel configuration
-  console.log(`Channel changed to ${newChannel}, reconnecting...`);
-  
-  // Show temporary message
-  const badge = document.getElementById('channelBadge');
-  if (badge) {
-    badge.textContent = '🔄 Switching...';
-  }
 }
 
 function showPlayButton() {
@@ -359,11 +292,16 @@ function showPlayButton() {
   btn.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:20px 40px;font-size:18px;z-index:1000;background:#667eea;color:white;border:none;border-radius:10px;cursor:pointer;box-shadow:0 4px 20px rgba(0,0,0,0.3);';
   
   btn.onclick = () => {
+    if (audioElement) {
+      audioElement.play()
+        .then(() => {
+          console.log('✓ Audio started after user interaction');
+          btn.remove();
+        })
+        .catch(e => console.error('Still cannot play:', e));
+    }
     if (audioContext && audioContext.state === 'suspended') {
-      audioContext.resume().then(() => {
-        console.log('✓ Audio started after user interaction');
-        btn.remove();
-      });
+      audioContext.resume();
     }
   };
   
@@ -372,27 +310,40 @@ function showPlayButton() {
 
 function updateVolume(value) {
   document.getElementById('volumeValue').textContent = value + '%';
-  applyVolume();
+  
+  if (audioElement) {
+    audioElement.volume = value / 100;
+  }
+  
+  if (window.volumeGainNode) {
+    window.volumeGainNode.gain.value = value / 100;
+  }
+
   socket.emit('volume-change', parseInt(value));
 }
 
 function disconnectClient() {
   isConnected = false;
   
-  if (sourceNode) {
-    sourceNode.disconnect();
-    sourceNode = null;
-  }
-  
-  if (destinationNode) {
-    destinationNode.disconnect();
-    destinationNode = null;
-  }
-  
   if (audioElement) {
     audioElement.pause();
     audioElement.srcObject = null;
     audioElement = null;
+  }
+  
+  if (splitterNode) {
+    splitterNode.disconnect();
+    splitterNode = null;
+  }
+  
+  if (leftGainNode) {
+    leftGainNode.disconnect();
+    leftGainNode = null;
+  }
+  
+  if (rightGainNode) {
+    rightGainNode.disconnect();
+    rightGainNode = null;
   }
   
   peerConnections.forEach(pc => pc.close());
@@ -426,17 +377,11 @@ async function startServer() {
         noiseSuppression: false,
         autoGainControl: false,
         sampleRate: 48000,
-        channelCount: 2
+        channelCount: 2  // Stereo
       } 
     });
 
-    const tracks = localStream.getAudioTracks();
-    const settings = tracks[0].getSettings();
-    console.log('✓ Audio captured:', settings);
-    
-    if (settings.channelCount !== 2) {
-      alert('⚠️ WARNING: Audio source is not stereo!\n\nCurrent channels: ' + settings.channelCount + '\n\nPlease ensure:\n1. CABLE Output is set to stereo (2 channels)\n2. Recording device properties show "2 channel"');
-    }
+    console.log('✓ Stereo audio stream captured:', localStream.getAudioTracks());
 
     document.getElementById('server-setup').style.display = 'none';
     document.getElementById('server-active').style.display = 'block';
@@ -446,22 +391,23 @@ async function startServer() {
 
     isConnected = true;
     
-    console.log('✓ Server ready! Waiting for clients...');
+    console.log('✓ Server ready! Waiting for clients to connect...');
   } catch (error) {
     console.error('❌ Error starting server:', error);
-    alert('Failed to access audio input.\n\nChecklist:\n✓ Microphone permission granted\n✓ CABLE Output set as default recording device\n✓ CABLE Output properties: 2 channel, 48000 Hz');
+    alert('Failed to access audio input.\n\nPlease check:\n1. Microphone permission is granted\n2. CABLE Output is set as default recording device\n3. Make sure it supports stereo (2 channels)');
   }
 }
 
 async function createPeerConnectionForClient(clientId, channel) {
-  console.log(`Creating WebRTC for client: ${clientId} (${channel})`);
+  console.log(`Creating WebRTC connection for client: ${clientId} (${channel})`);
   
   const pc = new RTCPeerConnection(iceServers);
   peerConnections.set(clientId, pc);
   
+  // Add local audio stream tracks
   localStream.getTracks().forEach(track => {
     pc.addTrack(track, localStream);
-    console.log('✓ Added track:', track.kind, track.label);
+    console.log('✓ Added audio track to peer connection');
   });
 
   pc.onicecandidate = (event) => {
@@ -474,14 +420,15 @@ async function createPeerConnectionForClient(clientId, channel) {
   };
 
   pc.oniceconnectionstatechange = () => {
-    console.log(`ICE (${clientId}):`, pc.iceConnectionState);
+    console.log(`ICE State (${clientId}):`, pc.iceConnectionState);
+  };
+
+  pc.onconnectionstatechange = () => {
+    console.log(`Connection State (${clientId}):`, pc.connectionState);
   };
 
   try {
-    const offer = await pc.createOffer({
-      offerToReceiveAudio: false,
-      offerToReceiveVideo: false
-    });
+    const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     
     socket.emit('offer', {
@@ -490,7 +437,7 @@ async function createPeerConnectionForClient(clientId, channel) {
       channel: channel
     });
     
-    console.log('✓ Offer sent');
+    console.log('✓ Offer sent to client:', clientId);
   } catch (error) {
     console.error('Error creating offer:', error);
   }
@@ -512,13 +459,6 @@ function updateAudioModeUI(mode) {
   if (activeBtn) {
     activeBtn.classList.add('active');
   }
-}
-
-function setClientVolume(clientId, volume) {
-  socket.emit('set-client-volume', {
-    clientId: clientId,
-    volume: volume
-  });
 }
 
 function stopServer() {
@@ -547,7 +487,7 @@ function updateClientList(clients, mode) {
   listElement.innerHTML = clients.map(client => {
     let channelIcon = '🔊';
     let channelClass = 'both';
-    let channelText = 'BOTH';
+    let channelText = 'Both';
     
     if (client.channel === 'left') {
       channelIcon = '◀️';
@@ -562,40 +502,33 @@ function updateClientList(clients, mode) {
     return `
       <div class="client-item">
         <div style="flex: 1;">
-          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+          <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
             <strong style="font-size: 15px;">${client.name}</strong>
             <span class="channel-badge-mini ${channelClass}">${channelIcon} ${channelText}</span>
           </div>
-          <small style="color: #999; font-size: 11px;">${client.id.substring(0, 8)}...</small>
+          <small style="color: #999; font-size: 12px;">${client.id.substring(0, 8)}...</small>
         </div>
-        <div style="width: 180px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <input 
-              type="range" 
-              min="0" 
-              max="100" 
-              value="${client.serverVolume || 100}" 
-              oninput="setClientVolume('${client.id}', this.value)"
-              style="flex: 1; height: 6px;"
-            />
-            <span style="font-size: 13px; min-width: 40px; text-align: right;" id="vol-${client.id}">${client.serverVolume || 100}%</span>
-          </div>
+        <div style="text-align: right;">
+          <span style="font-size: 14px;">🔊 ${client.volume}%</span>
         </div>
       </div>
     `;
   }).join('');
 }
 
-// ========== BACKGROUND SUPPORT ==========
+// ========== BACKGROUND AUDIO & WAKE LOCK FUNCTIONS ==========
 
 async function requestWakeLock() {
   try {
     if ('wakeLock' in navigator) {
       wakeLock = await navigator.wakeLock.request('screen');
-      console.log('✓ Wake Lock acquired');
+      console.log('✓ Wake Lock acquired - screen will stay on');
+      
       wakeLock.addEventListener('release', () => {
         console.log('Wake Lock released');
       });
+    } else {
+      console.warn('⚠ Wake Lock API not supported on this device');
     }
   } catch (err) {
     console.error('Wake Lock error:', err);
@@ -604,9 +537,11 @@ async function requestWakeLock() {
 
 function releaseWakeLock() {
   if (wakeLock !== null) {
-    wakeLock.release().then(() => {
-      wakeLock = null;
-    });
+    wakeLock.release()
+      .then(() => {
+        wakeLock = null;
+        console.log('✓ Wake Lock manually released');
+      });
   }
 }
 
@@ -614,6 +549,8 @@ function setupBackgroundAudioHandlers() {
   document.addEventListener('visibilitychange', handleVisibilityChange);
   window.addEventListener('beforeunload', handleBeforeUnload);
   document.addEventListener('visibilitychange', reacquireWakeLock);
+  
+  console.log('✓ Background audio handlers set up');
 }
 
 function removeBackgroundAudioHandlers() {
@@ -624,16 +561,26 @@ function removeBackgroundAudioHandlers() {
 
 function handleVisibilityChange() {
   if (document.hidden) {
+    console.log('📱 App backgrounded - keeping audio alive');
+    
     if (audioContext && audioContext.state === 'suspended') {
-      audioContext.resume();
+      audioContext.resume().then(() => {
+        console.log('✓ Audio context resumed in background');
+      });
     }
+    
+    if (audioElement && audioElement.paused) {
+      audioElement.play().catch(e => console.log('Background play prevented:', e));
+    }
+  } else {
+    console.log('📱 App foregrounded');
   }
 }
 
 function handleBeforeUnload(e) {
   if (isConnected) {
     e.preventDefault();
-    e.returnValue = 'Audio streaming active. Leave?';
+    e.returnValue = 'Audio streaming is active. Are you sure you want to leave?';
     return e.returnValue;
   }
 }
@@ -644,12 +591,17 @@ async function reacquireWakeLock() {
   }
 }
 
+// Initialize on page load
 window.addEventListener('load', () => {
   initSocket();
   
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/service-worker.js')
-      .then(reg => console.log('✓ Service Worker registered'))
-      .catch(err => console.log('SW failed:', err));
+      .then(registration => {
+        console.log('✓ Service Worker registered:', registration);
+      })
+      .catch(err => {
+        console.log('Service Worker registration failed:', err);
+      });
   }
 });
