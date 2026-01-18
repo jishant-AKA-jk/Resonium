@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <title>Audio Streamer</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 20px;
+      padding: 40px;
+      max-width: 500px;
+      width: 100%;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+      font-size: 28px;
+    }
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+    .role-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 30px;
+    }
+    .role-btn {
+      flex: 1;
+      padding: 15px;
+      border: 2px solid #667eea;
+      background: white;
+      color: #667eea;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: 600;
+      transition: all 0.3s;
+    }
+    .role-btn.active {
+      background: #667eea;
+      color: white;
+    }
+    .section {
+      display: none;
+    }
+    .section.active {
+      display: block;
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 15px;
+      border: 2px solid #e0e0e0;
+      border-radius: 10px;
+      font-size: 16px;
+      margin-bottom: 15px;
+      transition: border 0.3s;
+    }
+    input[type="text"]:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    button {
+      width: 100%;
+      padding: 15px;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    button:hover {
+      background: #5568d3;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .status {
+      padding: 15px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .status.connected {
+      background: #d4edda;
+      color: #155724;
+    }
+    .status.disconnected {
+      background: #f8d7da;
+      color: #721c24;
+    }
+    .volume-control {
+      margin-top: 20px;
+    }
+    .volume-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      color: #333;
+      font-weight: 600;
+    }
+    input[type="range"] {
+      width: 100%;
+      height: 8px;
+      border-radius: 5px;
+      background: #e0e0e0;
+      outline: none;
+      -webkit-appearance: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #667eea;
+      cursor: pointer;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #667eea;
+      cursor: pointer;
+      border: none;
+    }
+    .client-list {
+      margin-top: 20px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .client-item {
+      padding: 15px;
+      background: #f5f5f5;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .audio-indicator {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #28a745;
+      margin-right: 10px;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .btn-disconnect {
+      background: #dc3545;
+      margin-top: 20px;
+    }
+    .btn-disconnect:hover {
+      background: #c82333;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎵 Audio Streamer</h1>
+    <p class="subtitle">Stream PC audio to your devices</p>
+
+    <div class="role-selector">
+      <button class="role-btn active" onclick="switchRole('client')">📱 Receiver</button>
+      <button class="role-btn" onclick="switchRole('server')">💻 Server</button>
+    </div>
+
+    <!-- Client/Receiver Section -->
+    <div id="client-section" class="section active">
+      <div id="client-setup">
+        <input type="text" id="deviceName" placeholder="Device name (e.g., My Phone)" />
+        <button onclick="connectAsClient()">Connect to Stream</button>
+      </div>
+
+      <div id="client-connected" style="display: none;">
+        <div class="status connected">
+          <span class="audio-indicator"></span>
+          Connected & Receiving Audio
+        </div>
+        
+        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; color: #856404;">
+          <strong>📌 Keep this tab open</strong><br>
+          Screen can turn off, but don't close the browser or switch apps too long
+        </div>
+        
+        <div class="volume-control">
+          <div class="volume-label">
+            <span>🔊 Volume</span>
+            <span id="volumeValue">80%</span>
+          </div>
+          <input type="range" id="volumeSlider" min="0" max="100" value="80" oninput="updateVolume(this.value)">
+        </div>
+
+        <button class="btn-disconnect" onclick="disconnectClient()">Disconnect</button>
+      </div>
+    </div>
+
+    <!-- Server Section -->
+    <div id="server-section" class="section">
+      <div id="server-setup">
+        <button onclick="startServer()">Start Streaming Server</button>
+        <p style="margin-top: 15px; color: #666; font-size: 14px;">
+          📌 Make sure VB-Audio Cable is set as your audio output device
+        </p>
+      </div>
+
+      <div id="server-active" style="display: none;">
+        <div class="status connected">
+          Server Active - Ready to Stream
+        </div>
+
+        <div style="background: #f0f0f0; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+          <strong>Share this URL:</strong><br>
+          <code id="serverUrl" style="font-size: 14px;"></code>
+        </div>
+
+        <div class="client-list" id="clientList"></div>
+
+        <button class="btn-disconnect" onclick="stopServer()">Stop Server</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="client.js"></script>
+</body>
+</html>
