@@ -11,16 +11,18 @@ const io = socketIo(server, {
     origin: "*",
     methods: ["GET", "POST"]
   },
-  maxHttpBufferSize: 1e8
+  maxHttpBufferSize: 1e8,
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
 app.use(cors());
 app.use(express.static('public'));
 
-// Store connected clients
 const connectedClients = new Map();
+let audioMode = 'stereo';
+let syncTimestamp = Date.now();
 
-// Get local IP address
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
   for (const devName in interfaces) {
@@ -35,52 +37,136 @@ function getLocalIP() {
   return 'localhost';
 }
 
+function assignAudioChannel() {
+  const clients = Array.from(connectedClients.values());
+  
+  if (audioMode === 'mono') {
+    return 'both';
+  }
+  
+  const leftCount = clients.filter(c => c.channel === 'left').length;
+  const rightCount = clients.filter(c => c.channel === 'right').length;
+  
+  if (leftCount <= rightCount) {
+    return 'left';
+  } else {
+    return 'right';
+  }
+}
+
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
   socket.on('register-client', (data) => {
+    const channel = assignAudioChannel();
+    
     connectedClients.set(socket.id, {
       id: socket.id,
       name: data.name || 'Unknown Device',
       volume: data.volume || 100,
+      serverVolume: 100, // Volume controlled from server
+      channel: channel,
       timestamp: Date.now()
     });
     
-    console.log(`✓ Client registered: ${data.name} (${socket.id})`);
+    console.log(`✓ Client registered: ${data.name} (${socket.id}) - Channel: ${channel}`);
     
-    // Broadcast updated client list to all clients
-    io.emit('clients-update', Array.from(connectedClients.values()));
+    socket.emit('channel-assigned', {
+      channel: channel,
+      mode: audioMode
+    });
     
-    // Notify server page that a new client is ready for WebRTC
+    broadcastClientList();
+    
     socket.broadcast.emit('client-ready', {
       clientId: socket.id,
-      name: data.name
+      name: data.name,
+      channel: channel
     });
+    
+    // Send sync timestamp for latency compensation
+    socket.emit('sync-time', {
+      time: syncTimestamp,
+      clientSendTime: Date.now()
+    });
+  });
+
+  socket.on('change-channel', (newChannel) => {
+    const client = connectedClients.get(socket.id);
+    if (client) {
+      client.channel = newChannel;
+      console.log(`Channel changed for ${client.name}: ${newChannel}`);
+      
+      socket.emit('channel-assigned', {
+        channel: newChannel,
+        mode: audioMode
+      });
+      
+      broadcastClientList();
+      
+      socket.broadcast.emit('client-channel-changed', {
+        clientId: socket.id,
+        channel: newChannel
+      });
+    }
+  });
+
+  socket.on('set-audio-mode', (mode) => {
+    audioMode = mode;
+    console.log(`Audio mode changed to: ${mode}`);
+    
+    connectedClients.forEach((client, id) => {
+      if (mode === 'mono') {
+        client.channel = 'both';
+      } else {
+        client.channel = assignAudioChannel();
+      }
+      
+      io.to(id).emit('channel-assigned', {
+        channel: client.channel,
+        mode: audioMode
+      });
+    });
+    
+    broadcastClientList();
+    io.emit('audio-mode-changed', { mode: audioMode });
+  });
+
+  socket.on('set-client-volume', (data) => {
+    const client = connectedClients.get(data.clientId);
+    if (client) {
+      client.serverVolume = data.volume;
+      console.log(`Server volume for ${client.name}: ${data.volume}%`);
+      
+      // Send volume change to that specific client
+      io.to(data.clientId).emit('server-volume-change', data.volume);
+      
+      broadcastClientList();
+    }
   });
 
   socket.on('volume-change', (volume) => {
     const client = connectedClients.get(socket.id);
     if (client) {
       client.volume = volume;
-      io.emit('clients-update', Array.from(connectedClients.values()));
+      broadcastClientList();
     }
   });
 
-  // WebRTC signaling
   socket.on('offer', (data) => {
-    console.log(`Offer from ${socket.id} to ${data.targetId || 'all clients'}`);
+    console.log(`Offer from ${socket.id} to ${data.targetId || 'all'}`);
     
     if (data.targetId) {
-      // Send to specific client
       io.to(data.targetId).emit('offer', {
         offer: data.offer,
-        senderId: socket.id
+        senderId: socket.id,
+        channel: data.channel
       });
     } else {
-      // Broadcast to all clients except sender
       socket.broadcast.emit('offer', {
         offer: data.offer,
-        senderId: socket.id
+        senderId: socket.id,
+        channel: data.channel
       });
     }
   });
@@ -110,12 +196,28 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const client = connectedClients.get(socket.id);
     if (client) {
-      console.log(`✗ Client disconnected: ${client.name} (${socket.id})`);
+      console.log(`✗ Client disconnected: ${client.name}`);
     }
     connectedClients.delete(socket.id);
-    io.emit('clients-update', Array.from(connectedClients.values()));
+    broadcastClientList();
   });
 });
+
+function broadcastClientList() {
+  io.emit('clients-update', {
+    clients: Array.from(connectedClients.values()),
+    mode: audioMode
+  });
+}
+
+// Periodic sync for latency compensation
+setInterval(() => {
+  syncTimestamp = Date.now();
+  io.emit('sync-time', {
+    time: syncTimestamp,
+    clientSendTime: Date.now()
+  });
+}, 5000);
 
 const PORT = process.env.PORT || 3000;
 const localIP = getLocalIP();
@@ -126,6 +228,6 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('================================');
   console.log(`Local: http://localhost:${PORT}`);
   console.log(`Network: http://${localIP}:${PORT}`);
-  console.log('\nShare the Network URL with your mobile devices!');
+  console.log('\n📡 Features: Stereo separation + Sync + Per-device volume');
   console.log('================================\n');
 });

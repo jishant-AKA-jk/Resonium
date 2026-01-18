@@ -149,7 +149,7 @@
     }
     .client-list {
       margin-top: 20px;
-      max-height: 300px;
+      max-height: 400px;
       overflow-y: auto;
     }
     .client-item {
@@ -160,6 +160,7 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 15px;
     }
     .audio-indicator {
       display: inline-block;
@@ -181,12 +182,139 @@
     .btn-disconnect:hover {
       background: #c82333;
     }
+    .channel-indicator {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border-radius: 15px;
+      padding: 20px;
+      margin-bottom: 20px;
+      color: white;
+      text-align: center;
+      display: none;
+    }
+    .channel-badge {
+      display: inline-block;
+      padding: 10px 20px;
+      border-radius: 25px;
+      font-size: 18px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    .channel-badge.left {
+      background: #ff6b6b;
+      box-shadow: 0 0 20px rgba(255, 107, 107, 0.5);
+    }
+    .channel-badge.right {
+      background: #4ecdc4;
+      box-shadow: 0 0 20px rgba(78, 205, 196, 0.5);
+    }
+    .channel-badge.mono {
+      background: #95e1d3;
+    }
+    .channel-badge-mini {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: bold;
+      color: white;
+    }
+    .channel-badge-mini.left {
+      background: #ff6b6b;
+    }
+    .channel-badge-mini.right {
+      background: #4ecdc4;
+    }
+    .channel-badge-mini.both {
+      background: #95e1d3;
+      color: #333;
+    }
+    .channel-selector {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-top: 15px;
+    }
+    .channel-btn {
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      background: white;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.3s;
+    }
+    .channel-btn.left-btn {
+      border-color: #ff6b6b;
+      color: #ff6b6b;
+    }
+    .channel-btn.left-btn:hover {
+      background: #ff6b6b;
+      color: white;
+    }
+    .channel-btn.right-btn {
+      border-color: #4ecdc4;
+      color: #4ecdc4;
+    }
+    .channel-btn.right-btn:hover {
+      background: #4ecdc4;
+      color: white;
+    }
+    .channel-btn.both-btn {
+      border-color: #95e1d3;
+      color: #333;
+    }
+    .channel-btn.both-btn:hover {
+      background: #95e1d3;
+    }
+    .mode-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      background: #f5f5f5;
+      padding: 15px;
+      border-radius: 10px;
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 12px;
+      border: 2px solid #ddd;
+      background: white;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.3s;
+    }
+    .mode-btn.active {
+      background: #667eea;
+      color: white;
+      border-color: #667eea;
+    }
+    .info-box {
+      background: #e3f2fd;
+      border-left: 4px solid #2196f3;
+      padding: 12px;
+      border-radius: 5px;
+      margin-bottom: 15px;
+      font-size: 13px;
+      color: #1565c0;
+    }
+    .warning-box {
+      background: #fff3cd;
+      border: 1px solid #ffc107;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 15px;
+      font-size: 13px;
+      color: #856404;
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>🎵 Audio Streamer</h1>
-    <p class="subtitle">Stream PC audio to your devices</p>
+    <p class="subtitle">Stereo audio streaming to your devices</p>
 
     <div class="role-selector">
       <button class="role-btn active" onclick="switchRole('client')">📱 Receiver</button>
@@ -206,9 +334,25 @@
           Connected & Receiving Audio
         </div>
         
-        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; color: #856404;">
-          <strong>📌 Keep this tab open</strong><br>
-          Screen can turn off, but don't close the browser or switch apps too long
+        <div id="channelIndicator" class="channel-indicator">
+          <div id="channelBadge" class="channel-badge">🔊 BOTH</div>
+          <div id="channelInfo" style="font-size: 14px; opacity: 0.9;">Playing full stereo audio</div>
+          
+          <div class="channel-selector">
+            <button class="channel-btn left-btn" onclick="changeMyChannel('left')">
+              ◀️ LEFT
+            </button>
+            <button class="channel-btn both-btn" onclick="changeMyChannel('both')">
+              🔊 BOTH
+            </button>
+            <button class="channel-btn right-btn" onclick="changeMyChannel('right')">
+              ▶️ RIGHT
+            </button>
+          </div>
+        </div>
+
+        <div class="info-box">
+          💡 <strong>Stereo Mode:</strong> For 3D audio, use 2 devices - one as LEFT, one as RIGHT. Place them apart for spatial effect!
         </div>
         
         <div class="volume-control">
@@ -228,18 +372,32 @@
       <div id="server-setup">
         <button onclick="startServer()">Start Streaming Server</button>
         <p style="margin-top: 15px; color: #666; font-size: 14px;">
-          📌 Make sure VB-Audio Cable is set as your audio output device
+          📌 Set CABLE Output as recording device with <strong>stereo enabled</strong>
         </p>
       </div>
 
       <div id="server-active" style="display: none;">
         <div class="status connected">
-          Server Active - Ready to Stream
+          Server Active - Stereo Streaming Ready
         </div>
 
         <div style="background: #f0f0f0; padding: 15px; border-radius: 10px; margin-bottom: 20px;">
           <strong>Share this URL:</strong><br>
           <code id="serverUrl" style="font-size: 14px;"></code>
+        </div>
+
+        <div class="mode-selector">
+          <button id="stereoModeBtn" class="mode-btn active" onclick="setAudioMode('stereo')">
+            🎧 Stereo Mode
+          </button>
+          <button id="monoModeBtn" class="mode-btn" onclick="setAudioMode('mono')">
+            🔊 Mono Mode
+          </button>
+        </div>
+
+        <div class="info-box">
+          <strong>🎧 Stereo:</strong> Each device gets left/right channel<br>
+          <strong>🔊 Mono:</strong> All devices get same audio
         </div>
 
         <div class="client-list" id="clientList"></div>
